@@ -139,6 +139,8 @@ class RemoteConfig:
     timeout_seconds: int = 30
     allow_writes: bool = False
     max_read_bytes: int = 1_048_576
+    max_download_bytes: int = 52_428_800
+    download_dir: str | None = None
 
     @classmethod
     def from_env(cls) -> "RemoteConfig":
@@ -277,6 +279,25 @@ class RemoteConfig:
                 1_048_576,
                 minimum=1024,
             ),
+            max_download_bytes=_parse_int_value(
+                "DAYZ_MCP_MAX_DOWNLOAD_BYTES or [mcp].max_download_bytes",
+                _first_setting(
+                    ("DAYZ_MCP_MAX_DOWNLOAD_BYTES",),
+                    mcp,
+                    ("max_download_bytes",),
+                    default=52_428_800,
+                ),
+                52_428_800,
+                minimum=1024,
+            ),
+            download_dir=_parse_str_value(
+                "DAYZ_MCP_DOWNLOAD_DIR or [mcp].download_dir",
+                _first_setting(
+                    ("DAYZ_MCP_DOWNLOAD_DIR",),
+                    mcp,
+                    ("download_dir",),
+                ),
+            ),
         )
 
     def public_dict(self) -> dict[str, str | int | bool]:
@@ -293,6 +314,8 @@ class RemoteConfig:
             "timeout_seconds": self.timeout_seconds,
             "allow_writes": self.allow_writes,
             "max_read_bytes": self.max_read_bytes,
+            "max_download_bytes": self.max_download_bytes,
+            "download_dir_configured": bool(self.download_dir),
         }
 
 

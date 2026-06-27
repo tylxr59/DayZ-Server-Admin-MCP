@@ -48,3 +48,31 @@ def test_write_guard_allows_explicit_opt_in() -> None:
     client = make_client(allow_writes=True)
 
     client.ensure_writes_allowed()
+
+
+def test_read_text_chunk_uses_next_offset_and_eof(monkeypatch) -> None:
+    client = make_client(root="/", allow_writes=False)
+
+    def fake_read_range(path: str, offset: int, length: int) -> tuple[bytes, int]:
+        assert path == "types.xml"
+        assert offset == 5
+        assert length == 7
+        return b"example", 12
+
+    monkeypatch.setattr(client, "_read_sftp_range", fake_read_range)
+
+    result = client.read_text_chunk("types.xml", offset=5, length=7)
+
+    assert result["content"] == "example"
+    assert result["offset"] == 5
+    assert result["next_offset"] == 12
+    assert result["bytes_read"] == 7
+    assert result["file_size"] == 12
+    assert result["eof"] is True
+
+
+def test_read_text_chunk_rejects_lengths_above_configured_limit() -> None:
+    client = make_client()
+
+    with pytest.raises(ValueError):
+        client.read_text_chunk("types.xml", length=client.config.max_read_bytes + 1)

@@ -18,3 +18,5 @@ strict_host_key_checking = false
 # Keep writes disabled until you trust the MCP client flow.
 allow_writes = false
 max_read_bytes = 1048576
+max_download_bytes = 52428800
+# download_dir = "/tmp"

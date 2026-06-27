@@ -40,6 +40,13 @@ def list_remote_directory(path: str = ".") -> list[dict[str, Any]]:
 
 
 @mcp.tool()
+def get_remote_file_info(path: str) -> dict[str, Any]:
+    """Show remote file metadata, including size when available."""
+
+    return _client().file_info(path)
+
+
+@mcp.tool()
 def read_text_file(
     path: str,
     encoding: str = "utf-8",
@@ -51,10 +58,38 @@ def read_text_file(
 
 
 @mcp.tool()
+def read_text_file_chunk(
+    path: str,
+    offset: int = 0,
+    length: int | None = None,
+    encoding: str = "utf-8",
+) -> dict[str, Any]:
+    """Read part of a large text file by byte offset.
+
+    Use this for large files such as types.xml. The returned next_offset can be
+    passed into the next call until eof is true.
+    """
+
+    return _client().read_text_chunk(
+        path,
+        offset=offset,
+        length=length,
+        encoding=encoding,
+    )
+
+
+@mcp.tool()
 def read_file_base64(path: str, max_bytes: int | None = None) -> dict[str, Any]:
     """Read a binary file as base64 from the configured remote root."""
 
     return _client().read_base64(path, max_bytes=max_bytes)
+
+
+@mcp.tool()
+def download_remote_file(path: str) -> dict[str, Any]:
+    """Download a remote file to a local temp/configured directory and return its path."""
+
+    return _client().download_file(path)
 
 
 @mcp.tool()

@@ -107,6 +107,8 @@ def test_config_file_values(monkeypatch, tmp_path) -> None:
         [mcp]
         allow_writes = true
         max_read_bytes = 2048
+        max_download_bytes = 4096
+        download_dir = "/tmp/dayz-downloads"
         """,
         encoding="utf-8",
     )
@@ -123,6 +125,8 @@ def test_config_file_values(monkeypatch, tmp_path) -> None:
     assert config.strict_host_key_checking is True
     assert config.allow_writes is True
     assert config.max_read_bytes == 2048
+    assert config.max_download_bytes == 4096
+    assert config.download_dir == "/tmp/dayz-downloads"
 
 
 def test_environment_overrides_config_file(monkeypatch, tmp_path) -> None:

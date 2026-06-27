@@ -4,11 +4,13 @@ import base64
 import io
 import posixpath
 import stat
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from ftplib import FTP, FTP_TLS, error_perm
+from pathlib import Path
 
 import paramiko
 from paramiko import SFTPClient, SSHClient
@@ -145,6 +147,38 @@ class DayZRemoteClient:
         entries.sort(key=lambda item: (item.type != "dir", item.name.lower()))
         return [entry.to_dict() for entry in entries]
 
+    def file_info(self, path: str) -> dict[str, str | int | None]:
+        absolute = self.resolve_path(path)
+        if self.config.protocol == "sftp":
+            with self.connect_sftp() as sftp:
+                attrs = sftp.stat(absolute)
+                return RemoteEntry(
+                    name=posixpath.basename(absolute),
+                    path=self.relative_path(absolute),
+                    type=_mode_type(attrs.st_mode),
+                    size=attrs.st_size,
+                    modified=_format_unix_time(attrs.st_mtime),
+                ).to_dict()
+
+        with self.connect_ftp() as ftp:
+            size = None
+            modified = None
+            try:
+                size = ftp.size(absolute)
+            except Exception:
+                pass
+            try:
+                modified = _format_mlsd_time(ftp.voidcmd(f"MDTM {absolute}").split()[-1])
+            except Exception:
+                pass
+            return RemoteEntry(
+                name=posixpath.basename(absolute),
+                path=self.relative_path(absolute),
+                type="dir" if self._ftp_is_directory(ftp, absolute) else "file",
+                size=size,
+                modified=modified,
+            ).to_dict()
+
     def read_bytes(self, path: str, max_bytes: int | None = None) -> bytes:
         limit = max_bytes or self.config.max_read_bytes
         if limit > self.config.max_read_bytes:
@@ -165,12 +199,83 @@ class DayZRemoteClient:
         data = self.read_bytes(path, max_bytes=max_bytes)
         return data.decode(encoding)
 
+    def read_text_chunk(
+        self,
+        path: str,
+        offset: int = 0,
+        length: int | None = None,
+        encoding: str = "utf-8",
+    ) -> dict[str, str | int | bool | None]:
+        if offset < 0:
+            raise ValueError("offset must be >= 0")
+
+        chunk_length = length or self.config.max_read_bytes
+        if chunk_length < 1:
+            raise ValueError("length must be >= 1")
+        if chunk_length > self.config.max_read_bytes:
+            raise ValueError(
+                f"length cannot exceed configured limit {self.config.max_read_bytes}"
+            )
+
+        if self.config.protocol == "sftp":
+            data, size = self._read_sftp_range(path, offset, chunk_length)
+        else:
+            data, size = self._read_ftp_range(path, offset, chunk_length)
+
+        end_offset = offset + len(data)
+        return {
+            "path": path,
+            "offset": offset,
+            "next_offset": end_offset,
+            "bytes_read": len(data),
+            "file_size": size,
+            "eof": size is not None and end_offset >= size,
+            "content": data.decode(encoding, errors="replace"),
+        }
+
     def read_base64(self, path: str, max_bytes: int | None = None) -> dict[str, str | int]:
         data = self.read_bytes(path, max_bytes=max_bytes)
         return {
             "path": path,
             "bytes": len(data),
             "base64": base64.b64encode(data).decode("ascii"),
+        }
+
+    def download_file(self, path: str) -> dict[str, str | int | bool | None]:
+        info = self.file_info(path)
+        size = info.get("size")
+        if isinstance(size, int) and size > self.config.max_download_bytes:
+            raise ValueError(
+                f"File is {size} bytes, which exceeds download limit {self.config.max_download_bytes}"
+            )
+
+        output_dir = Path(self.config.download_dir or tempfile.gettempdir())
+        output_dir = output_dir / "dayz-server-admin-mcp"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        absolute = self.resolve_path(path)
+        local_name = _safe_local_name(self.relative_path(absolute))
+        local_path = output_dir / local_name
+
+        if self.config.protocol == "sftp":
+            bytes_written = self._download_sftp_file(path, local_path)
+        else:
+            bytes_written = self._download_ftp_file(path, local_path)
+
+        if bytes_written > self.config.max_download_bytes:
+            try:
+                local_path.unlink()
+            except OSError:
+                pass
+            raise ValueError(
+                f"File exceeds download limit {self.config.max_download_bytes} bytes"
+            )
+
+        return {
+            "path": path,
+            "local_path": str(local_path),
+            "bytes": bytes_written,
+            "downloaded": True,
         }
 
     def write_text(
@@ -310,6 +415,14 @@ class DayZRemoteClient:
                     buffer.write(chunk)
             return buffer.getvalue()
 
+    def _read_sftp_range(self, path: str, offset: int, length: int) -> tuple[bytes, int | None]:
+        absolute = self.resolve_path(path)
+        with self.connect_sftp() as sftp:
+            size = sftp.stat(absolute).st_size
+            with sftp.open(absolute, "rb") as remote_file:
+                remote_file.seek(offset)
+                return remote_file.read(length), size
+
     def _read_ftp_bytes(self, path: str, limit: int) -> bytes:
         absolute = self.resolve_path(path)
         with self.connect_ftp() as ftp:
@@ -330,6 +443,56 @@ class DayZRemoteClient:
 
             ftp.retrbinary(f"RETR {absolute}", append)
             return buffer.getvalue()
+
+    def _read_ftp_range(self, path: str, offset: int, length: int) -> tuple[bytes, int | None]:
+        absolute = self.resolve_path(path)
+        with self.connect_ftp() as ftp:
+            try:
+                size = ftp.size(absolute)
+            except Exception:
+                size = None
+
+            buffer = io.BytesIO()
+
+            def append(chunk: bytes) -> None:
+                remaining = length - buffer.tell()
+                if remaining <= 0:
+                    return
+                buffer.write(chunk[:remaining])
+
+            ftp.retrbinary(f"RETR {absolute}", append, rest=offset)
+            return buffer.getvalue(), size
+
+    def _download_sftp_file(self, path: str, local_path: Path) -> int:
+        absolute = self.resolve_path(path)
+        bytes_written = 0
+        with self.connect_sftp() as sftp:
+            with sftp.open(absolute, "rb") as source:
+                with local_path.open("wb") as destination:
+                    while True:
+                        chunk = source.read(65_536)
+                        if not chunk:
+                            break
+                        bytes_written += len(chunk)
+                        if bytes_written > self.config.max_download_bytes:
+                            break
+                        destination.write(chunk)
+        return bytes_written
+
+    def _download_ftp_file(self, path: str, local_path: Path) -> int:
+        absolute = self.resolve_path(path)
+        bytes_written = 0
+        with self.connect_ftp() as ftp:
+            with local_path.open("wb") as destination:
+
+                def append(chunk: bytes) -> None:
+                    nonlocal bytes_written
+                    bytes_written += len(chunk)
+                    if bytes_written <= self.config.max_download_bytes:
+                        destination.write(chunk)
+
+                ftp.retrbinary(f"RETR {absolute}", append)
+        return bytes_written
 
     def _write_sftp_bytes(
         self,
@@ -499,6 +662,11 @@ def _format_unix_time(value: int | None) -> str | None:
     if value is None:
         return None
     return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+def _safe_local_name(path: str) -> str:
+    name = path.strip("/").replace("/", "__")
+    return name or "download"
 
 
 FtpError = RemoteError
