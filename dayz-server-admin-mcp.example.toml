@@ -1,0 +1,20 @@
+[remote]
+protocol = "sftp"
+host = "example.com"
+port = 22
+user = "dayz-admin"
+password = "change-me"
+root = "/path/to/dayz/server"
+timeout = 30
+
+# FTP/FTPS only. Ignored for SFTP.
+passive = true
+
+# SFTP only.
+strict_host_key_checking = false
+# known_hosts_file = "/home/you/.ssh/known_hosts"
+
+[mcp]
+# Keep writes disabled until you trust the MCP client flow.
+allow_writes = false
+max_read_bytes = 1048576

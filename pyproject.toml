@@ -1,0 +1,30 @@
+[project]
+name = "dayz-server-admin-mcp"
+version = "0.1.0"
+description = "MCP server for inspecting and editing DayZ server files over SFTP, FTP, or FTPS."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "tylxr" }
+]
+dependencies = [
+    "mcp[cli]>=1.27,<2",
+    "paramiko>=3.5",
+    "tomli>=2.0 ; python_full_version < '3.11'",
+]
+
+[project.scripts]
+dayz-server-admin-mcp = "dayz_server_admin_mcp.server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
